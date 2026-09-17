@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
 
-# ---------------------------------------------------------
-# PAGE SETTINGS
-# ---------------------------------------------------------
+# =========================================================
+# PAGE SETUP
+# =========================================================
 
 st.set_page_config(
     page_title="Transmission Line Fault Locator",
@@ -13,15 +13,25 @@ st.set_page_config(
 
 st.title("⚡ Transmission Line Fault Locator")
 
-st.write(
-    "Enter the fault distance reported by the relay "
-    "to identify the corresponding tower."
-)
+
+# =========================================================
+# EXCEL FILE
+# =========================================================
+
+FILE = "259-249-250-213-214-233-234.xlsx"
 
 
-# ---------------------------------------------------------
+# =========================================================
 # LINE CONFIGURATION
-# ---------------------------------------------------------
+#
+# The line name gives the direction:
+#
+# L#259                 MTPS -> RANCHI
+# L#249                 RAMGARH -> RANCHI
+# L#250                 MTPS -> RAMGARH
+# L#213 & L#214         JSR -> BTPS
+# L#233 & L234          RAMGARH -> BTPS
+# =========================================================
 
 LINES = {
     "L#259 MTPS-RANCHI": {
@@ -42,26 +52,23 @@ LINES = {
         "second": "RAMGARH"
     },
 
-    "L#213 AND L#214 BTPS-JSR": {
-        "sheet": "L#213 AND L#214 BTPS-JSR",
-        "first": "BTPS",
-        "second": "JSR"
+    "L#213 AND L#214 JSR-BTPS": {
+        "sheet": "L#213 AND L#214 JSR-BTPS",
+        "first": "JSR",
+        "second": "BTPS"
     },
 
-    "L#233 AND L234 BTPS-RAMGARH": {
-        "sheet": "L#233 AND L234 BTPS-RAMGARH",
-        "first": "BTPS",
-        "second": "RAMGARH"
+    "L#233 AND L234 RAMGARH-BTPS": {
+        "sheet": "L#233 AND L234 RAMGARH-BTPS",
+        "first": "RAMGARH",
+        "second": "BTPS"
     }
 }
 
 
-# ---------------------------------------------------------
-# LOAD EXCEL DATA
-# ---------------------------------------------------------
-
-FILE = "259-249-250-213-214-233-234.xlsx"
-
+# =========================================================
+# LOAD DATA
+# =========================================================
 
 @st.cache_data
 def load_data():
@@ -75,15 +82,34 @@ def load_data():
             sheet_name=config["sheet"]
         )
 
-        # Make sure cumulative distance is numeric
-        df["Cumulative span length ( KM)"] = pd.to_numeric(
-            df["Cumulative span length ( KM)"],
+        # -------------------------------------------------
+        # Convert required columns to numeric
+        # -------------------------------------------------
+
+        df["Loc No"] = pd.to_numeric(
+            df["Loc No"],
             errors="coerce"
         )
 
-        # Remove rows where cumulative distance is unavailable
-        df = df.dropna(
-            subset=["Cumulative span length ( KM)"]
+        df["FWD Span"] = pd.to_numeric(
+            df["FWD Span"],
+            errors="coerce"
+        )
+
+        df["SPAN WITH JUMPER ADDED"] = pd.to_numeric(
+            df["SPAN WITH JUMPER ADDED"],
+            errors="coerce"
+        )
+
+        # -------------------------------------------------
+        # Calculate cumulative distance ourselves
+        #
+        # This avoids depending on Excel formulas in Column G
+        # -------------------------------------------------
+
+        df["Calculated Cumulative KM"] = (
+            df["SPAN WITH JUMPER ADDED"].fillna(0).cumsum()
+            / 1000
         )
 
         data[line_name] = df
@@ -94,9 +120,9 @@ def load_data():
 data = load_data()
 
 
-# ---------------------------------------------------------
+# =========================================================
 # USER INPUT
-# ---------------------------------------------------------
+# =========================================================
 
 line = st.selectbox(
     "Select Transmission Line",
@@ -114,6 +140,7 @@ relay = st.selectbox(
     ]
 )
 
+
 fault_distance = st.number_input(
     "Fault Distance Reported by Relay (km)",
     min_value=0.0,
@@ -122,9 +149,9 @@ fault_distance = st.number_input(
 )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # CALCULATE
-# ---------------------------------------------------------
+# =========================================================
 
 if st.button(
     "CALCULATE FAULT LOCATION",
@@ -132,15 +159,15 @@ if st.button(
     use_container_width=True
 ):
 
-    df = data[line]
+    df = data[line].copy()
 
-    cumulative_column = "Cumulative span length ( KM)"
+    cumulative = df["Calculated Cumulative KM"]
 
-    # Total line length
-    total_distance = df[cumulative_column].max()
+    total_distance = cumulative.iloc[-1]
+
 
     # -----------------------------------------------------
-    # CHECK WHETHER RELAY IS AT FIRST OR SECOND END
+    # CHECK RELAY END
     # -----------------------------------------------------
 
     if relay == config["first"]:
@@ -155,115 +182,125 @@ if st.button(
 
 
     # -----------------------------------------------------
-    # VALIDATE DISTANCE
+    # CHECK DISTANCE
     # -----------------------------------------------------
 
     if fault_distance > total_distance:
 
         st.error(
-            f"Entered fault distance ({fault_distance:.3f} km) "
-            f"is greater than the total line length "
-            f"({total_distance:.3f} km)."
+            f"Fault distance is greater than the "
+            f"total line length of {total_distance:.3f} km."
+        )
+
+    elif distance_from_first < 0:
+
+        st.error(
+            "Invalid fault distance."
         )
 
     else:
 
         # -------------------------------------------------
-        # FIND THE TOWER
-        # -------------------------------------------------
+        # FIND TOWER
         #
-        # Find the last row whose cumulative distance
-        # is less than or equal to the calculated distance.
-        #
-        # This corresponds to the tower/span containing
-        # the fault.
+        # The fault belongs to the tower/span whose
+        # cumulative distance is immediately before the
+        # calculated fault distance.
         # -------------------------------------------------
 
         valid_rows = df[
-            df[cumulative_column] <= distance_from_first
+            df["Calculated Cumulative KM"]
+            <= distance_from_first
         ]
 
         if len(valid_rows) == 0:
 
-            st.error(
-                "The fault distance falls before the first "
-                "available tower in the data."
-            )
+            # Fault before first tower
+            row = df.iloc[0]
 
         else:
 
             row = valid_rows.iloc[-1]
 
 
-            # -------------------------------------------------
-            # RESULT
-            # -------------------------------------------------
+        # -------------------------------------------------
+        # RESULTS
+        # -------------------------------------------------
 
-            st.divider()
+        st.divider()
 
-            st.subheader("Fault Location")
+        st.subheader("Fault Location")
 
 
-            # Distance information
+        # Distance information
 
-            st.write(
-                f"**Relay:** {relay}"
+        st.write(
+            f"**Relay Location:** {relay}"
+        )
+
+        st.write(
+            f"**Fault Distance Reported by Relay:** "
+            f"{fault_distance:.3f} km"
+        )
+
+        st.write(
+            f"**Distance from {config['first']}:** "
+            f"{distance_from_first:.3f} km"
+        )
+
+        st.write(
+            f"**Total Line Length:** "
+            f"{total_distance:.3f} km"
+        )
+
+
+        st.divider()
+
+
+        # -------------------------------------------------
+        # TOWER RESULTS
+        # -------------------------------------------------
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+
+            st.metric(
+                "Tower Number",
+                str(row["Tower Num"])
             )
 
-            st.write(
-                f"**Distance reported by relay:** "
-                f"{fault_distance:.3f} km"
+        with col2:
+
+            st.metric(
+                "Tower Type",
+                str(row["Type"])
             )
 
-            st.write(
-                f"**Distance from {config['first']}:** "
-                f"{distance_from_first:.3f} km"
+        with col3:
+
+            st.metric(
+                "Jurisdiction",
+                str(row["Jurisdiction"])
             )
 
 
-            st.divider()
+        st.divider()
 
 
-            # Tower information
+        # -------------------------------------------------
+        # ADDITIONAL INFORMATION
+        # -------------------------------------------------
 
-            col1, col2 = st.columns(2)
+        st.write(
+            f"**Location No.:** {row['Loc No']}"
+        )
 
-            with col1:
+        st.write(
+            f"**Cumulative Distance at Tower:** "
+            f"{row['Calculated Cumulative KM']:.3f} km"
+        )
 
-                st.metric(
-                    "Tower Number",
-                    str(row["Tower Num"])
-                )
-
-                st.metric(
-                    "Tower Type",
-                    str(row["Type"])
-                )
-
-            with col2:
-
-                st.metric(
-                    "Jurisdiction",
-                    str(row["Jurisdiction"])
-                )
-
-                st.metric(
-                    "Location No.",
-                    str(row["Loc No"])
-                )
-
-
-            # -------------------------------------------------
-            # ADDITIONAL INFORMATION
-            # -------------------------------------------------
-
-            st.divider()
-
-            st.write(
-                f"**Cumulative distance at tower:** "
-                f"{row[cumulative_column]:.3f} km"
-            )
-
-            st.write(
-                f"**Line:** {line}"
-            )
+        st.write(
+            f"**Line:** {line}"
+        )
